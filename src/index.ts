@@ -20,7 +20,7 @@ app.use(express.json());
 // =====================================
 
 const BASE_URL = "https://votlove-backend.onrender.com"
-const FRONT_URL = "https://votlove.web.app"
+const FRONT_URL = "https://votlove-app.web.app"
 
 // =====================================
 // 🧪 TEST DB
