@@ -19,8 +19,8 @@ app.use(express.json());
 // 🌐 CONFIG
 // =====================================
 
-const BASE_URL = process.env.BASE_URL || "http://192.168.80.151:3000";
-const FRONT_URL = process.env.FRONT_URL || "http://192.168.80.151:8080";
+const BASE_URL = "https://votlove-backend.onrender.com"
+const FRONT_URL = "https://votlove.web.app"
 
 // =====================================
 // 🧪 TEST DB
