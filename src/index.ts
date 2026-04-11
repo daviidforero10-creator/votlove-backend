@@ -240,6 +240,12 @@ app.post("/votaciones", async (req, res) => {
   }
 });
 
+
+
+console.log("🔥 BACKEND NUEVO ACTIVO 🔥");
+console.log("FRONT_URL:", FRONT_URL);
+
+
 // =====================================
 // 🟢 ACTIVAR / DESACTIVAR / CERRAR
 // =====================================
@@ -289,7 +295,7 @@ app.get("/votacion-activa", async (req, res) => {
 // =====================================
 
 app.get("/qr/:token", async (req, res) => {
-  const url = `${FRONT_URL}/#/votar/${req.params.token}`;
+  const url = `https://google.com`;
   const qr = await QRCode.toBuffer(url);
   res.setHeader("Content-Type", "image/png");
   res.send(qr);
@@ -300,20 +306,57 @@ app.get("/qr/:token", async (req, res) => {
 // =====================================
 
 app.get("/pdf-votantes", async (req, res) => {
-  const result = await pool.query("SELECT * FROM votantes");
-  const doc = new PDFDocument();
-  doc.pipe(res);
+  try {
+    const result = await pool.query("SELECT * FROM votantes");
 
-  for (const v of result.rows) {
-    const url = `${FRONT_URL}/#/votar/${v.qr_token}`;
-    const qr = await QRCode.toBuffer(url);
+    const doc = new PDFDocument({
+      size: "A4",
+      margin: 50,
+    });
 
-    doc.text(v.nombre, { align: "center" });
-    doc.image(qr, { fit: [200, 200], align: "center" });
-    doc.addPage();
+    // ✅ HEADERS CORRECTOS (CLAVE)
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", "inline; filename=votantes.pdf");
+
+    doc.pipe(res);
+
+    for (let i = 0; i < result.rows.length; i++) {
+      const v = result.rows[i];
+
+      const url = `${process.env.FRONT_URL}/#/votar/${v.qr_token}`;
+      const qr = await QRCode.toBuffer(url);
+
+      // 🧾 Título
+      doc.fontSize(18).text("TARJETA DE VOTACIÓN", {
+        align: "center",
+      });
+
+      doc.moveDown();
+
+      // 👤 Nombre
+      doc.fontSize(14).text(v.nombre, {
+        align: "center",
+      });
+
+      doc.moveDown(2);
+
+      // 📱 QR centrado
+      doc.image(qr, {
+        fit: [200, 200],
+        align: "center",
+      });
+
+      // 👉 Evitar página extra al final
+      if (i !== result.rows.length - 1) {
+        doc.addPage();
+      }
+    }
+
+    doc.end();
+  } catch (error) {
+    console.error("Error generando PDF:", error);
+    res.status(500).send("Error generando PDF");
   }
-
-  doc.end();
 });
 
 // =====================================
