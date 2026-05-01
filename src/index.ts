@@ -232,6 +232,12 @@ app.post("/votaciones", async (req, res) => {
       );
     }
 
+    // ✅ VOTO EN BLANCO (AGREGADO SIN TOCAR NADA)
+    await pool.query(
+      "INSERT INTO candidatos (nombre, votacion_id, foto) VALUES ($1,$2,$3)",
+      ["Voto en blanco", votacion.id, null]
+    );
+
     res.json(votacion);
 
   } catch (error) {
