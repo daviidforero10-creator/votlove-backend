@@ -257,6 +257,19 @@ console.log("FRONT_URL:", FRONT_URL);
 // =====================================
 
 app.put("/votaciones/activar/:id", async (req, res) => {
+  const multipleActiva = await pool.query(
+    `SELECT * FROM votaciones_multiples
+     WHERE estado = 'activa'
+     LIMIT 1`
+  );
+
+  if (multipleActiva.rows.length > 0) {
+    return res.json({
+      ok: false,
+      error: "Hay una votación múltiple activa. Debe cerrarla o desactivarla primero."
+    });
+  }
+
   await pool.query("UPDATE votaciones SET estado='inactiva'");
   await pool.query("UPDATE votaciones SET estado='activa' WHERE id=$1", [req.params.id]);
   res.json({ ok: true });
@@ -611,4 +624,769 @@ app.get("/estado-votacion/:id", async (req, res) => {
 
 app.listen(3000, "0.0.0.0", () => {
   console.log("🔥 SERVIDOR CORRIENDO");
+});
+
+
+
+// =====================================
+// 🗳 TEST VOTACIONES MULTIPLES
+// =====================================
+
+app.get("/test-multiples", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM votaciones_multiples"
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      error: "Error obteniendo votaciones múltiples",
+    });
+  }
+})
+
+
+// =====================================
+// 🗳 CREAR VOTACIÓN MÚLTIPLE
+// =====================================
+
+app.post("/votaciones-multiples", async (req, res) => {
+  try {
+    const { nombre, max_selecciones, candidatos } = req.body;
+
+    if (!nombre) {
+      return res.status(400).json({ error: "Nombre requerido" });
+    }
+
+    if (!max_selecciones || max_selecciones <= 0) {
+      return res.status(400).json({ error: "Número máximo de selecciones requerido" });
+    }
+
+    if (!candidatos || !Array.isArray(candidatos) || candidatos.length === 0) {
+      return res.status(400).json({ error: "Debe agregar candidatos" });
+    }
+
+    if (max_selecciones > candidatos.length) {
+      return res.status(400).json({
+        error: "El máximo de selecciones no puede ser mayor al número de candidatos",
+      });
+    }
+
+    const nuevaVotacion = await pool.query(
+      `INSERT INTO votaciones_multiples (nombre, max_selecciones, estado)
+       VALUES ($1, $2, 'inactiva')
+       RETURNING *`,
+      [nombre, max_selecciones]
+    );
+
+    const votacionId = nuevaVotacion.rows[0].id;
+
+    for (const candidato of candidatos) {
+      await pool.query(
+        `INSERT INTO candidatos_multiples (votacion_id, nombre, foto)
+         VALUES ($1, $2, $3)`,
+        [votacionId, candidato.nombre, candidato.foto || null]
+      );
+    }
+
+    res.json({
+      mensaje: "Votación múltiple creada correctamente",
+      votacion: nuevaVotacion.rows[0],
+    });
+  } catch (error) {
+    console.error("Error creando votación múltiple:", error);
+    res.status(500).json({ error: "Error creando votación múltiple" });
+  }
+});
+
+
+// =====================================
+// 🗳 OBTENER VOTACIÓN MÚLTIPLE ACTIVA
+// =====================================
+
+app.get("/votacion-multiple-activa", async (req, res) => {
+  try {
+    const votacionResult = await pool.query(
+      `SELECT * FROM votaciones_multiples
+       WHERE estado = 'activa'
+       LIMIT 1`
+    );
+
+    if (votacionResult.rows.length === 0) {
+      return res.status(404).json({
+        error: "No hay votación múltiple activa",
+      });
+    }
+
+    const votacion = votacionResult.rows[0];
+
+    const candidatosResult = await pool.query(
+      `SELECT * FROM candidatos_multiples
+       WHERE votacion_id = $1`,
+      [votacion.id]
+    );
+
+    res.json({
+      votacion,
+      candidatos: candidatosResult.rows,
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: "Error obteniendo votación múltiple activa",
+    });
+  }
+});
+
+
+// =====================================
+// 🟢 ACTIVAR VOTACIÓN MÚLTIPLE
+// =====================================
+
+app.put("/votaciones-multiples/activar/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Verificar si existe votación normal activa
+    const normalActiva = await pool.query(
+      `SELECT * FROM votaciones
+       WHERE estado = 'activa'
+       LIMIT 1`
+    );
+
+    if (normalActiva.rows.length > 0) {
+      return res.status(400).json({
+        error:
+          "Hay una votación normal activa. Debe desactivarla primero.",
+      });
+    }
+
+    // Desactivar todas las múltiples
+    await pool.query(
+      `UPDATE votaciones_multiples
+       SET estado = 'inactiva'`
+    );
+
+    // Activar la seleccionada
+    const result = await pool.query(
+      `UPDATE votaciones_multiples
+       SET estado = 'activa'
+       WHERE id = $1
+       RETURNING *`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        error: "Votación múltiple no encontrada",
+      });
+    }
+
+    res.json({
+      mensaje: "Votación múltiple activada correctamente",
+      votacion: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Error activando votación múltiple:", error);
+
+    res.status(500).json({
+      error: "Error activando votación múltiple",
+    });
+  }
+});
+
+
+
+// =====================================
+// 🗳 DATOS PARA VOTACIÓN MÚLTIPLE
+// =====================================
+
+app.get("/votar-multiple-data/:token", async (req, res) => {
+  try {
+    const { token } = req.params;
+
+    // Buscar votante
+    const votanteResult = await pool.query(
+      `SELECT * FROM votantes
+       WHERE qr_token = $1`,
+      [token]
+    );
+
+    if (votanteResult.rows.length === 0) {
+      return res.status(404).json({
+        error: "Votante no encontrado",
+      });
+    }
+
+    const votante = votanteResult.rows[0];
+
+    // Buscar votación múltiple activa
+    const votacionResult = await pool.query(
+      `SELECT * FROM votaciones_multiples
+       WHERE estado = 'activa'
+       LIMIT 1`
+    );
+
+    if (votacionResult.rows.length === 0) {
+      return res.status(404).json({
+        error: "No hay votación múltiple activa",
+      });
+    }
+
+    const votacion = votacionResult.rows[0];
+
+    // Verificar si ya votó
+    const yaVotoResult = await pool.query(
+      `SELECT * FROM votos_multiples
+       WHERE votacion_id = $1
+       AND votante_id = $2
+       LIMIT 1`,
+      [votacion.id, votante.id]
+    );
+
+    if (yaVotoResult.rows.length > 0) {
+      return res.status(400).json({
+        error: "Este votante ya votó en esta votación múltiple",
+      });
+    }
+
+    // Obtener candidatos
+    const candidatosResult = await pool.query(
+      `SELECT * FROM candidatos_multiples
+       WHERE votacion_id = $1
+       ORDER BY id ASC`,
+      [votacion.id]
+    );
+
+    res.json({
+      votante,
+      votacion,
+      max_selecciones: votacion.max_selecciones,
+      candidatos: candidatosResult.rows,
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: "Error obteniendo datos para votación múltiple",
+    });
+  }
+});
+
+// =====================================
+// 🗳 REGISTRAR VOTO MÚLTIPLE
+// =====================================
+
+app.post("/votar-multiple", async (req, res) => {
+  try {
+    const { token, candidato_ids } = req.body;
+
+    if (!token) {
+      return res.status(400).json({ error: "Token requerido" });
+    }
+
+    if (
+      !candidato_ids ||
+      !Array.isArray(candidato_ids) ||
+      candidato_ids.length === 0
+    ) {
+      return res.status(400).json({ error: "Debe seleccionar candidatos" });
+    }
+
+    const idsConvertidos = candidato_ids.map((id) => Number(id));
+
+    if (idsConvertidos.some((id) => !Number.isInteger(id) || id <= 0)) {
+      return res.status(400).json({
+        error: "Lista de candidatos inválida",
+      });
+    }
+
+    const votanteResult = await pool.query(
+      "SELECT * FROM votantes WHERE qr_token = $1",
+      [token]
+    );
+
+    if (votanteResult.rows.length === 0) {
+      return res.status(404).json({ error: "Votante no encontrado" });
+    }
+
+    const votante = votanteResult.rows[0];
+
+    const votacionResult = await pool.query(
+      "SELECT * FROM votaciones_multiples WHERE estado = 'activa' LIMIT 1"
+    );
+
+    if (votacionResult.rows.length === 0) {
+      return res.status(404).json({ error: "No hay votación múltiple activa" });
+    }
+
+    const votacion = votacionResult.rows[0];
+
+    if (votacion.estado !== "activa") {
+      return res.status(400).json({
+        error: "La votación múltiple no está activa",
+      });
+    }
+
+    if (idsConvertidos.length > votacion.max_selecciones) {
+      return res.status(400).json({
+        error: `Solo puede seleccionar máximo ${votacion.max_selecciones} candidatos`,
+      });
+    }
+
+    const idsUnicos = [...new Set(idsConvertidos)];
+
+    if (idsUnicos.length !== idsConvertidos.length) {
+      return res.status(400).json({
+        error: "No puede repetir el mismo candidato",
+      });
+    }
+
+    const candidatosValidosResult = await pool.query(
+      `SELECT id FROM candidatos_multiples
+       WHERE votacion_id = $1
+       AND id = ANY($2::int[])`,
+      [votacion.id, idsUnicos]
+    );
+
+    if (candidatosValidosResult.rows.length !== idsUnicos.length) {
+      return res.status(400).json({
+        error: "Uno o más candidatos no pertenecen a esta votación múltiple",
+      });
+    }
+
+    const yaVotoResult = await pool.query(
+      `SELECT id FROM votos_multiples
+       WHERE votacion_id = $1 AND votante_id = $2
+       LIMIT 1`,
+      [votacion.id, votante.id]
+    );
+
+    if (yaVotoResult.rows.length > 0) {
+      return res.status(400).json({
+        error: "Este votante ya votó en esta votación múltiple",
+      });
+    }
+
+    for (const candidatoId of idsUnicos) {
+      await pool.query(
+        `INSERT INTO votos_multiples (votacion_id, candidato_id, votante_id)
+         VALUES ($1, $2, $3)`,
+        [votacion.id, candidatoId, votante.id]
+      );
+    }
+
+    res.json({
+      mensaje: "Voto múltiple registrado correctamente",
+      total_selecciones: idsUnicos.length,
+    });
+  } catch (error) {
+    console.error("Error registrando voto múltiple:", error);
+    res.status(500).json({ error: "Error registrando voto múltiple" });
+  }
+});
+
+
+// =====================================
+// 📊 RESULTADOS VOTACIÓN MÚLTIPLE
+// =====================================
+
+app.get("/resultados-multiples/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const votacionResult = await pool.query(
+      `SELECT * FROM votaciones_multiples WHERE id = $1`,
+      [id]
+    );
+
+    if (votacionResult.rows.length === 0) {
+      return res.status(404).json({
+        error: "Votación múltiple no encontrada",
+      });
+    }
+
+    const votacion = votacionResult.rows[0];
+
+    const resultadosResult = await pool.query(
+      `
+      SELECT 
+        c.id,
+        c.nombre,
+        c.foto,
+        COUNT(v.id)::int AS votos
+      FROM candidatos_multiples c
+      LEFT JOIN votos_multiples v 
+        ON v.candidato_id = c.id
+      WHERE c.votacion_id = $1
+      GROUP BY c.id, c.nombre, c.foto
+      ORDER BY votos DESC, c.nombre ASC
+      `,
+      [id]
+    );
+
+    const totalSeleccionesResult = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM votos_multiples WHERE votacion_id = $1`,
+      [id]
+    );
+
+    const totalVotantesResult = await pool.query(
+      `SELECT COUNT(DISTINCT votante_id)::int AS total FROM votos_multiples WHERE votacion_id = $1`,
+      [id]
+    );
+
+    const totalSelecciones = totalSeleccionesResult.rows[0].total;
+    const totalVotantes = totalVotantesResult.rows[0].total;
+
+    const resultados = resultadosResult.rows.map((r) => ({
+      ...r,
+      porcentaje:
+        totalSelecciones > 0
+          ? Number(((r.votos / totalSelecciones) * 100).toFixed(2))
+          : 0,
+    }));
+
+    res.json({
+      votacion,
+      total_votantes_que_votaron: totalVotantes,
+      total_selecciones_registradas: totalSelecciones,
+      max_selecciones_por_votante: votacion.max_selecciones,
+      resultados,
+    });
+  } catch (error) {
+    console.error("Error obteniendo resultados múltiples:", error);
+    res.status(500).json({
+      error: "Error obteniendo resultados múltiples",
+    });
+  }
+});
+
+
+// =====================================
+// 📋 LISTAR VOTACIONES MÚLTIPLES
+// =====================================
+
+app.get("/votaciones-multiples", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM votaciones_multiples
+       ORDER BY id DESC`
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error("Error listando votaciones múltiples:", error);
+    res.status(500).json({
+      error: "Error listando votaciones múltiples",
+    });
+  }
+});
+
+
+// =====================================
+// 🔴 DESACTIVAR VOTACIÓN MÚLTIPLE
+// =====================================
+
+app.put("/votaciones-multiples/desactivar/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query(
+      `UPDATE votaciones_multiples
+       SET estado = 'inactiva'
+       WHERE id = $1
+       RETURNING *`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        error: "Votación múltiple no encontrada",
+      });
+    }
+
+    res.json({
+      mensaje: "Votación múltiple desactivada correctamente",
+      votacion: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Error desactivando votación múltiple:", error);
+    res.status(500).json({
+      error: "Error desactivando votación múltiple",
+    });
+  }
+});
+
+// =====================================
+// 🗑 ELIMINAR VOTACIÓN MÚLTIPLE
+// =====================================
+
+app.delete("/votaciones-multiples/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query(
+      `DELETE FROM votaciones_multiples
+       WHERE id = $1
+       RETURNING *`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        error: "Votación múltiple no encontrada",
+      });
+    }
+
+    res.json({
+      mensaje: "Votación múltiple eliminada correctamente",
+      votacion: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Error eliminando votación múltiple:", error);
+    res.status(500).json({
+      error: "Error eliminando votación múltiple",
+    });
+  }
+});
+
+
+// =====================================
+// 🟡 CERRAR VOTACIÓN MÚLTIPLE
+// =====================================
+
+app.put("/votaciones-multiples/cerrar/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query(
+      `UPDATE votaciones_multiples
+       SET estado = 'cerrada'
+       WHERE id = $1
+       RETURNING *`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        error: "Votación múltiple no encontrada",
+      });
+    }
+
+    res.json({
+      mensaje: "Votación múltiple cerrada correctamente",
+      votacion: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Error cerrando votación múltiple:", error);
+    res.status(500).json({
+      error: "Error cerrando votación múltiple",
+    });
+  }
+});
+
+
+// =====================================
+// 🔎 VERIFICAR TIPO DE VOTACIÓN ACTIVA
+// =====================================
+
+app.get("/tipo-votacion-activa", async (req, res) => {
+  try {
+    const normalResult = await pool.query(
+      "SELECT * FROM votaciones WHERE estado='activa' LIMIT 1"
+    );
+
+    if (normalResult.rows.length > 0) {
+      return res.json({
+        tipo: "normal",
+        votacion: normalResult.rows[0],
+      });
+    }
+
+    const multipleResult = await pool.query(
+      "SELECT * FROM votaciones_multiples WHERE estado='activa' LIMIT 1"
+    );
+
+    if (multipleResult.rows.length > 0) {
+      return res.json({
+        tipo: "multiple",
+        votacion: multipleResult.rows[0],
+      });
+    }
+
+    res.json({
+      tipo: "ninguna",
+      votacion: null,
+    });
+  } catch (error) {
+    console.error("Error verificando tipo de votación activa:", error);
+    res.status(500).json({
+      error: "Error verificando tipo de votación activa",
+    });
+  }
+});
+
+
+
+// =====================================
+// 📊 RESUMEN GENERAL VOTACIÓN MÚLTIPLE
+// =====================================
+
+app.get("/resumen-multiple/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const votacionResult = await pool.query(
+      `SELECT * FROM votaciones_multiples WHERE id = $1`,
+      [id]
+    );
+
+    const totalVotantesHabilitadosResult = await pool.query(
+  `SELECT COUNT(*)::int AS total FROM votantes`
+);
+
+    if (votacionResult.rows.length === 0) {
+      return res.status(404).json({
+        error: "Votación múltiple no encontrada",
+      });
+    }
+
+    const votacion = votacionResult.rows[0];
+
+    const candidatosResult = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM candidatos_multiples WHERE votacion_id = $1`,
+      [id]
+    );
+
+    const votantesResult = await pool.query(
+      `SELECT COUNT(DISTINCT votante_id)::int AS total FROM votos_multiples WHERE votacion_id = $1`,
+      [id]
+    );
+
+    const seleccionesResult = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM votos_multiples WHERE votacion_id = $1`,
+      [id]
+    );
+
+    res.json({
+      votacion,
+      total_candidatos: candidatosResult.rows[0].total,
+      total_votantes_habilitados: totalVotantesHabilitadosResult.rows[0].total,
+      total_votantes_que_votaron: votantesResult.rows[0].total,
+      total_selecciones_registradas: seleccionesResult.rows[0].total,
+      max_selecciones_por_votante: votacion.max_selecciones,
+      selecciones_posibles:
+        votantesResult.rows[0].total * votacion.max_selecciones,
+    });
+  } catch (error) {
+    console.error("Error obteniendo resumen múltiple:", error);
+    res.status(500).json({
+      error: "Error obteniendo resumen múltiple",
+    });
+  }
+});
+
+
+// =====================================
+// 📄 PDF RESULTADOS VOTACIÓN MÚLTIPLE
+// =====================================
+
+app.get("/pdf-resultados-multiples/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const votacionResult = await pool.query(
+      `SELECT * FROM votaciones_multiples WHERE id = $1`,
+      [id]
+    );
+
+    if (votacionResult.rows.length === 0) {
+      return res.status(404).json({
+        error: "Votación múltiple no encontrada",
+      });
+    }
+
+    const votacion = votacionResult.rows[0];
+
+    const resultadosResult = await pool.query(
+      `
+      SELECT 
+        c.nombre,
+        COUNT(v.id)::int AS votos
+      FROM candidatos_multiples c
+      LEFT JOIN votos_multiples v 
+        ON v.candidato_id = c.id
+      WHERE c.votacion_id = $1
+      GROUP BY c.id, c.nombre
+      ORDER BY votos DESC, c.nombre ASC
+      `,
+      [id]
+    );
+
+    const totalSeleccionesResult = await pool.query(
+      `SELECT COUNT(*)::int AS total 
+       FROM votos_multiples 
+       WHERE votacion_id = $1`,
+      [id]
+    );
+
+    const totalVotantesResult = await pool.query(
+      `SELECT COUNT(DISTINCT votante_id)::int AS total 
+       FROM votos_multiples 
+       WHERE votacion_id = $1`,
+      [id]
+    );
+
+    const totalSelecciones = totalSeleccionesResult.rows[0].total;
+    const totalVotantes = totalVotantesResult.rows[0].total;
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename=resultados-multiples-${id}.pdf`
+    );
+
+    const doc = new PDFDocument({ margin: 50 });
+    doc.pipe(res);
+
+    doc.fontSize(20).text("Resultados Votación Múltiple", {
+      align: "center",
+    });
+
+    doc.moveDown();
+
+    doc.fontSize(13).text(`Votación: ${votacion.nombre}`);
+    doc.text(`Estado: ${votacion.estado}`);
+    doc.text(`Máximo de selecciones por votante: ${votacion.max_selecciones}`);
+    doc.text(`Votantes que votaron: ${totalVotantes}`);
+    doc.text(`Selecciones registradas: ${totalSelecciones}`);
+
+    doc.moveDown();
+
+    doc.fontSize(15).text("Resultados por candidato:");
+    doc.moveDown(0.5);
+
+    resultadosResult.rows.forEach((r, index) => {
+      const porcentaje =
+        totalSelecciones > 0
+          ? ((r.votos / totalSelecciones) * 100).toFixed(2)
+          : "0.00";
+
+      doc
+        .fontSize(12)
+        .text(
+          `${index + 1}. ${r.nombre} - ${r.votos} selecciones - ${porcentaje}%`
+        );
+    });
+
+    doc.end();
+  } catch (error) {
+    console.error("Error generando PDF resultados múltiples:", error);
+    res.status(500).json({
+      error: "Error generando PDF resultados múltiples",
+    });
+  }
 });
