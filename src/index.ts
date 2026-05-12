@@ -1202,6 +1202,7 @@ app.get("/tipo-votacion-activa", async (req, res) => {
     if (normalResult.rows.length > 0) {
       return res.json({
         tipo: "normal",
+        mensaje: "Hay votación normal activa",
         votacion: normalResult.rows[0],
       });
     }
@@ -1213,12 +1214,33 @@ app.get("/tipo-votacion-activa", async (req, res) => {
     if (multipleResult.rows.length > 0) {
       return res.json({
         tipo: "multiple",
+        mensaje: "Hay votación múltiple activa",
         votacion: multipleResult.rows[0],
       });
     }
 
-    res.json({
-      tipo: "ninguna",
+    const normalesCreadas = await pool.query(
+      "SELECT id FROM votaciones LIMIT 1"
+    );
+
+    const multiplesCreadas = await pool.query(
+      "SELECT id FROM votaciones_multiples LIMIT 1"
+    );
+
+    if (
+      normalesCreadas.rows.length === 0 &&
+      multiplesCreadas.rows.length === 0
+    ) {
+      return res.json({
+        tipo: "sin_votaciones",
+        mensaje: "No hay votaciones creadas",
+        votacion: null,
+      });
+    }
+
+    return res.json({
+      tipo: "sin_activas",
+      mensaje: "No hay votaciones activadas",
       votacion: null,
     });
   } catch (error) {
